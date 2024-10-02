@@ -5,7 +5,7 @@ A package for running emulators and scrapers.
 ## Installation
 
 ```bash
-npm install your-package-name
+npm install android-facebook-ads-scraper
 ```
 
 ## Usage
@@ -16,7 +16,7 @@ const {
 	startEmulator,
 	scraperMain,
 	shutdownAll,
-} = require("your-package-name");
+} = require("android-facebook-ads-scraper");
 
 (async () => {
 	try {
