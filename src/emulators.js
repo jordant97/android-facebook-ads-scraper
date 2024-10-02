@@ -40,7 +40,7 @@ async function startEmulator(emulatorName) {
 
 		if (emulators.includes(emulatorName)) {
 			await spawn("emulator", ["-avd", emulatorName]);
-			await sleep(2000);
+			await sleep(5000);
 			const deviceId = await getEmulatorDeviceId();
 			return deviceId;
 		} else {
