@@ -28,7 +28,7 @@ function getEmulatorDeviceId() {
 			const deviceInfo = lastDevice.split("\t");
 			return deviceInfo[0];
 		}
-		throw new Error("No emulator device found");
+		throw new Error("No emulator device found", JSON.stringify(devices));
 	} catch (error) {
 		console.error("Error getting emulator device ID:", error);
 		throw error;
