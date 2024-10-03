@@ -17,6 +17,7 @@
 		"axios": "^1.7.7",
 		"clipboardy": "^4.0.0",
 		"copy-paste": "^1.5.3",
+		"cross-spawn": "^7.0.3",
 		"dotenv": "^16.4.5",
 		"openai": "^4.66.1",
 		"tcp-port-used": "^1.0.2",

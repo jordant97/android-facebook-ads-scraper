@@ -1,4 +1,5 @@
-const { execSync, spawn } = require("child_process");
+const { execSync } = require("child_process");
+const { spawn } = require("cross-spawn");
 const path = require("path");
 const { sleep } = require("./utils");
 
@@ -39,8 +40,15 @@ async function startEmulator(emulatorName) {
 		const emulators = await listEmulators();
 
 		if (emulators.includes(emulatorName)) {
-			await spawn("emulator", ["-avd", emulatorName]);
-			await sleep(5000);
+			await spawn(
+				process.env.EMULATOR_PATH || "emulator",
+				["-avd", emulatorName],
+				{
+					stdio: "inherit",
+					shell: true,
+				}
+			);
+			await sleep(2000);
 			const deviceId = await getEmulatorDeviceId();
 			return deviceId;
 		} else {

@@ -4,7 +4,7 @@ const wdio = require("webdriverio");
 const OpenAI = require("openai");
 const { findElement, getRandomInt, getClipboardContent } = require("./utils");
 const { writeFileSync, readFileSync } = require("fs");
-const { spawn } = require("child_process");
+const { spawn } = require("cross-spawn");
 
 let appiumServerMap = new Map();
 let driverMap = new Map();
@@ -384,13 +384,15 @@ function startAppiumServer(deviceId) {
 
 		const port = getPortFromDeviceId(deviceId);
 		console.log("Starting Appium server...");
-		const appium = spawn("npx", [
-			"appium",
-			"--use-drivers",
-			"uiautomator2",
-			"-p",
-			port.toString(),
-		]);
+
+		const appium = spawn(
+			process.env.APPIUM_PATH || "appium",
+			["--use-drivers", "uiautomator2", "-p", "4772"],
+			{
+				stdio: "inherit",
+				shell: true,
+			}
+		);
 
 		appium.stdout.on("data", (data) => {
 			console.log(`Appium (${deviceId}): ${data}`);
