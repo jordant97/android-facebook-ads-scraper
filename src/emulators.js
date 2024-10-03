@@ -39,6 +39,8 @@ async function startEmulator(emulatorName) {
 	try {
 		const emulators = await listEmulators();
 
+		console.log("Emulators:", emulators, emulatorName);
+
 		if (emulators.includes(emulatorName)) {
 			await spawn(
 				process.env.EMULATOR_PATH || "emulator",
