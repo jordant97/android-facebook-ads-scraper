@@ -379,7 +379,7 @@ function startAppiumServer(deviceId) {
 	return new Promise((resolve, reject) => {
 		function getPortFromDeviceId(deviceId) {
 			const numericPart = parseInt(deviceId.split("-")[1]);
-			return (numericPart % 1000) + 4723; // Ensures port is between 4723 and 5722
+			return numericPart + 1000; // Ensures port is between 4723 and 5722
 		}
 
 		const port = getPortFromDeviceId(deviceId);
@@ -387,7 +387,7 @@ function startAppiumServer(deviceId) {
 
 		const appium = spawn(
 			process.env.APPIUM_PATH || "appium",
-			["--use-drivers", "uiautomator2", "-p", "4772"],
+			["--use-drivers", "uiautomator2", "-p", port],
 			{
 				stdio: "inherit",
 				shell: true,
