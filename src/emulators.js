@@ -15,31 +15,55 @@ function listEmulators() {
 	}
 }
 
-function getEmulatorDeviceId() {
-	try {
-		const stdout = execSync("adb devices", { encoding: "utf-8" });
+async function getEmulatorDeviceId(retries = 2) {
+	for (let attempt = 0; attempt <= retries; attempt++) {
+		try {
+			const stdout = execSync("adb devices", { encoding: "utf-8" });
 
-		const lines = stdout.trim().split("\n");
-		// Remove the first line (header) and filter out empty lines
-		const devices = lines.slice(1).filter((line) => line.trim() !== "");
+			const lines = stdout.trim().split("\n");
+			// Remove the first line (header) and filter out empty lines
+			const devices = lines.slice(1).filter((line) => line.trim() !== "");
 
-		if (devices.length > 0) {
-			// Get the last device in the list
-			const lastDevice = devices[devices.length - 1];
-			const deviceInfo = lastDevice.split("\t");
-			return deviceInfo[0];
+			console.log("devices in getEmulatorDeviceId", devices);
+
+			if (devices.length > 0) {
+				// Get the last device in the list
+				const lastDevice = devices[devices.length - 1];
+				const deviceInfo = lastDevice.split("\t");
+				return deviceInfo[0];
+			}
+
+			if (attempt === retries) {
+				throw new Error("No emulator device found", JSON.stringify(devices));
+			}
+
+			console.log(`Retry attempt ${attempt + 1} of ${retries + 1}`);
+			await sleep(2000); // Wait for 2 seconds before retrying
+		} catch (error) {
+			if (attempt === retries) {
+				console.error("Error getting emulator device ID:", error);
+
+				// Execute the specified commands
+				try {
+					execSync("adb kill-server", { stdio: "inherit" });
+					execSync("adb start-server", { stdio: "inherit" });
+					execSync("adb devices", { stdio: "inherit" });
+				} catch (cmdError) {
+					console.error("Error executing ADB commands:", cmdError);
+				}
+
+				throw error;
+			}
+
+			console.log(`Retry attempt ${attempt + 1} of ${retries + 1}`);
+			await sleep(2000); // Wait for 2 seconds before retrying
 		}
-		throw new Error("No emulator device found", JSON.stringify(devices));
-	} catch (error) {
-		console.error("Error getting emulator device ID:", error);
-		throw error;
 	}
 }
+
 async function startEmulator(emulatorName) {
 	try {
 		const emulators = await listEmulators();
-
-		console.log("Emulators:", emulators, emulatorName);
 
 		if (emulators.includes(emulatorName)) {
 			await spawn(
@@ -50,7 +74,9 @@ async function startEmulator(emulatorName) {
 					shell: true,
 				}
 			);
-			await sleep(2000);
+			console.time("start");
+			await sleep(5000);
+			console.timeEnd("start");
 			const deviceId = await getEmulatorDeviceId();
 			return deviceId;
 		} else {

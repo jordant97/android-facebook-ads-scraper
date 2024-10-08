@@ -4,7 +4,7 @@ const wdio = require("webdriverio");
 const OpenAI = require("openai");
 const { findElement, getRandomInt, getClipboardContent } = require("./utils");
 const { writeFileSync, readFileSync } = require("fs");
-const { spawn } = require("cross-spawn");
+const { spawn } = require("child_process");
 
 let appiumServerMap = new Map();
 let driverMap = new Map();
@@ -239,14 +239,17 @@ async function launchFacebookApp(config, deviceId) {
 					}
 
 					const currentFocusPost = posts[posts.length - 1];
-					const isAds = await currentFocusPost.$$("~Hide ad");
+					const hideAdElements = await currentFocusPost.$$("~Hide ad");
+					const hideAdChineseElements = await currentFocusPost.$$("~隐藏广告");
+					const isAds =
+						hideAdElements.length > 0 || hideAdChineseElements.length;
 
 					if (isAds.length === 0) {
 						continue;
 					}
 
 					const screenshot = await driver.takeScreenshot();
-					const screenshotPath = `./screenshot.png`;
+					const screenshotPath = `./${deviceId}.png`;
 
 					await driver.pause(getRandomInt(2000, 4000));
 					writeFileSync(screenshotPath, screenshot, "base64");
@@ -264,26 +267,51 @@ async function launchFacebookApp(config, deviceId) {
 						continue;
 					}
 
-					const shareButton = await currentFocusPost.$$("~Share");
+					const shareButtonEnglish = await currentFocusPost.$$("~Share");
+					const shareButtonChinese = await currentFocusPost.$$("~分享");
 
-					if (shareButton.length === 0) {
+					if (
+						shareButtonEnglish.length === 0 &&
+						shareButtonChinese.length === 0
+					) {
 						continue;
 					}
 
+					const shareButton =
+						shareButtonEnglish.length > 0
+							? shareButtonEnglish
+							: shareButtonChinese;
+
 					await shareButton[0].click();
 
-					const copyLinkButton = await driver.$$("~Copy link");
+					const copyLinkButtonEnglish = await driver.$$("~Copy link");
+					const copyLinkButtonChinese = await driver.$$("~复制链接");
 					await driver.pause(getRandomInt(2000, 5000));
 
+					const copyLinkButton =
+						copyLinkButtonEnglish.length > 0
+							? copyLinkButtonEnglish
+							: copyLinkButtonChinese;
 					console.log("copyLinkButton", copyLinkButton);
 
 					if (copyLinkButton.length === 0) {
-						const closeButton = await driver.$$("~Close");
-						await closeButton[0].click();
+						const closeButtonEnglish = await driver.$$("~Close");
+						const closeButtonChinese = await driver.$$("~关闭");
+						const closeButton =
+							closeButtonEnglish.length > 0
+								? closeButtonEnglish
+								: closeButtonChinese;
+
+						if (closeButton.length > 0) {
+							await closeButton[0].click();
+						} else {
+							console.log("Neither 'Copy link' nor 'Close' button found");
+						}
 						continue;
 					}
 
 					await copyLinkButton[0].click();
+
 					await driver.pause(getRandomInt(2000, 5000));
 
 					const clipboardContent = await getClipboardContent();
@@ -294,7 +322,7 @@ async function launchFacebookApp(config, deviceId) {
 						postId: `-`,
 						lastCommented: 0,
 						commentLimit: 0,
-						accountId: "mobileFb",
+						accountId: deviceId,
 					});
 
 					await driver.pause(getRandomInt(2000, 5000));
@@ -369,34 +397,40 @@ async function closeApp(deviceId) {
 		}
 	}
 }
-
-function getPortFromDeviceId(deviceId) {
-	const numericPart = parseInt(deviceId.split("-")[1]);
-	return numericPart + 1000; // Ensures port is between 4723 and 5722
-}
-
 function startAppiumServer(deviceId) {
 	return new Promise((resolve, reject) => {
 		function getPortFromDeviceId(deviceId) {
 			const numericPart = parseInt(deviceId.split("-")[1]);
-			return numericPart + 1000; // Ensures port is between 4723 and 5722
+			return numericPart - 1000; // Ensures port is between 4723 and 5722
 		}
 
 		const port = getPortFromDeviceId(deviceId);
-		console.log("Starting Appium server...");
+		console.log("Starting Appium server...", port);
 
-		const appium = spawn(
-			process.env.APPIUM_PATH || "appium",
-			["--use-drivers", "uiautomator2", "-p", port],
-			{
-				stdio: "inherit",
-				shell: true,
-			}
-		);
+		let appium;
+		try {
+			appium = spawn(
+				process.env.APPIUM_PATH || "appium",
+				["--use-drivers", "uiautomator2", "-p", port.toString()],
+				{
+					stdio: ["pipe", "pipe", "pipe"],
+					shell: true,
+				}
+			);
+		} catch (error) {
+			console.error(`Failed to spawn Appium process: ${error.message}`);
+			return reject(error);
+		}
+
+		if (!appium || !appium.stdout || !appium.stderr) {
+			console.error("Failed to create Appium process or its streams");
+			return reject(new Error("Appium process creation failed"));
+		}
 
 		appium.stdout.on("data", (data) => {
-			console.log(`Appium (${deviceId}): ${data}`);
-			if (data.includes("Appium REST http interface listener started")) {
+			const output = data.toString();
+			console.log(`Appium (${deviceId}): ${output}`);
+			if (output.includes("Appium REST http interface listener started")) {
 				appiumServerMap.set(deviceId, { server: appium, port: port });
 				console.log(
 					`Appium server for device ${deviceId} started successfully on port ${port}`
@@ -406,7 +440,7 @@ function startAppiumServer(deviceId) {
 		});
 
 		appium.stderr.on("data", (data) => {
-			console.error(`Appium Error (${deviceId}): ${data}`);
+			console.error(`Appium Error (${deviceId}): ${data.toString()}`);
 		});
 
 		appium.on("error", (error) => {
@@ -423,6 +457,19 @@ function startAppiumServer(deviceId) {
 			);
 			appiumServerMap.delete(deviceId);
 		});
+
+		// Add a timeout to reject the promise if Appium doesn't start within 30 seconds
+		setTimeout(() => {
+			if (!appiumServerMap.has(deviceId)) {
+				console.error(
+					`Appium server for device ${deviceId} failed to start within 30 seconds`
+				);
+				if (appium) {
+					appium.kill();
+				}
+				reject(new Error("Appium server start timeout"));
+			}
+		}, 30000);
 	});
 }
 
@@ -455,7 +502,7 @@ async function scraperMain(config, deviceId) {
 	} catch (error) {
 		console.error("Error in scraperMain:", error);
 	} finally {
-		await stopAppiumServer();
+		await stopAppiumServer(deviceId);
 	}
 }
 
