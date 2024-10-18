@@ -317,7 +317,7 @@ async function launchFacebookApp(config, deviceId) {
 					const clipboardContent = await getClipboardContent();
 					console.log("clipboardContent", clipboardContent);
 
-					await axios.post("https://rpa-gpt.vercel.app/api/records", {
+					await axios.post("https://rpa-gpt.b1ueprint.com/api/records", {
 						url: clipboardContent,
 						postId: `-`,
 						lastCommented: 0,
