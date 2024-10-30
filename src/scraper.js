@@ -9,21 +9,43 @@ const { spawn } = require("child_process");
 let appiumServerMap = new Map();
 let driverMap = new Map();
 
+async function smoothScroll(driver, distance) {
+	const { height } = await driver.getWindowRect();
+
+	try {
+		const result = await driver.executeScript("mobile: scrollGesture", [
+			{
+				left: 100,
+				top: Math.min(height - 300, height * 0.7), // Adjust starting position
+				width: 200,
+				height: 600,
+				direction: "down", // Change direction to up since we're scrolling content upward
+				percent: 0.8,
+				speed: 1500, // Slightly reduced speed for better reliability
+			},
+		]);
+
+		return result; // Returns true if scroll was successful
+	} catch (error) {
+		console.log("Scroll failed:", error.message);
+		return false;
+	}
+}
+
 const capabilities = {
 	platformName: "Android",
-	"appium:platformVersion": "15.0",
 	"appium:automationName": "UiAutomator2",
 	"appium:appPackage": "com.facebook.katana",
 	"appium:appActivity": "com.facebook.katana.activity.FbMainTabActivity",
 	"appium:noReset": true,
 	"appium:fullReset": false,
-	"appium:autoLaunch": false,
-	"appium:enableAccessibility": true,
-	"appium:disableSuppressAccessibilityService": false,
-	"appium:newCommandTimeout": 60 * 10, // 10 minutes
 	"appium:autoGrantPermissions": true,
-	"appium:uiautomator2ServerInstallTimeout": 60000, // 60 seconds
-	"appium:adbExecTimeout": 60000,
+	"appium:allowTestPackages": true,
+	"appium:enforceAppInstall": true,
+	"appium:settings[settingsResetTimeout]": 30000,
+	"appium:skipServerInstallation": false,
+	"appium:skipDeviceInitialization": false,
+	"appium:ignoreHiddenApiPolicyError": true,
 };
 
 let openai;
@@ -83,11 +105,35 @@ async function analyzeScreenshotWithOpenAI(screenshotPath) {
 	}
 }
 
-async function launchFacebookApp(config, deviceId) {
+async function validateAndGetDriver(deviceId, capabilities, port) {
+	let driver = driverMap.get(deviceId);
+
+	if (driver) {
+		try {
+			// Test if the session is still valid
+			await driver.getStatus();
+			return driver;
+		} catch (error) {
+			console.log("Existing driver session invalid, cleaning up...");
+			try {
+				await driver.deleteSession();
+			} catch (cleanupError) {
+				console.error("Error cleaning up invalid session:", cleanupError);
+			}
+			driverMap.delete(deviceId);
+			driver = null;
+		}
+	}
+
+	// Create new driver if needed
+	driver = await createDriver(deviceId, capabilities, port);
+	return driver;
+}
+
+async function launchFacebookApp(config, deviceId, port) {
 	let totalPost = config.totalPost;
 	const successfulDescriptions = [];
 	let retries = 100;
-	let processedPosts = 0;
 
 	let driver;
 
@@ -101,16 +147,17 @@ async function launchFacebookApp(config, deviceId) {
 			console.log("Attempting to connect to Appium server...");
 			console.log("Capabilities:", JSON.stringify(_capabilities, null, 2));
 
-			driver = driverMap.get(deviceId);
-			if (!driver) {
-				driver = await createDriver(deviceId, capabilities);
-			}
+			driver = await validateAndGetDriver(deviceId, capabilities, port);
+
+			driver.updateSettings({
+				waitForIdleTimeout: 500,
+			});
 
 			const { height } = await driver.getWindowRect();
 
 			console.log("Session created successfully");
 			await driver.activateApp("com.facebook.katana");
-			await driver.pause(getRandomInt(5000, 10000));
+			await driver.pause(getRandomInt(2000, 5000));
 
 			const isAppRunning = await driver.isAppInstalled("com.facebook.katana");
 			console.log("Is Facebook app running?", isAppRunning);
@@ -121,7 +168,7 @@ async function launchFacebookApp(config, deviceId) {
 			}
 
 			console.log("App launched successfully");
-			await driver.pause(getRandomInt(3000, 6000));
+			await driver.pause(getRandomInt(2000, 5000));
 
 			// Find the RecyclerView (adjust selector if needed)
 			const recyclerViewSelector =
@@ -137,200 +184,89 @@ async function launchFacebookApp(config, deviceId) {
 			for (let i = 0; i < totalPost; i++) {
 				try {
 					const directPath = "./*/android.view.ViewGroup";
-
 					const posts = await recyclerView.$$(directPath);
+					console.log("Found posts:", posts.length);
 
-					for (let i = 0; i < posts.length; i++) {
-						if (i === posts.length - 1) {
-							const post = posts[i];
-							const bounds = await post.getAttribute("bounds");
+					for (let j = 0; j < posts.length; j++) {
+						const currentPost = posts[j];
 
-							console.log("before bounds", bounds);
+						// Check for hide ad button in both languages
+						const [hideAdResult, hideAdChineseResult] =
+							await Promise.allSettled([
+								currentPost.$$("~Hide ad"),
+								currentPost.$$("~隐藏广告"),
+							]);
 
+						const hasAd =
+							(hideAdResult.status === "fulfilled" &&
+								hideAdResult.value.length > 0) ||
+							(hideAdChineseResult.status === "fulfilled" &&
+								hideAdChineseResult.value.length > 0);
+
+						if (hasAd) {
+							// Get the bounds of the ad post
+							const bounds = await currentPost.getAttribute("bounds");
 							const match = bounds.match(/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/);
+
 							if (!match) {
-								console.log("Failed to parse bounds");
+								console.log("Failed to parse bounds, skipping post");
 								continue;
 							}
 
 							const [, , currentY] = match.map(Number);
-							const targetY = 200;
-							let scrollDistance = currentY - targetY;
-							// Get screen size
+							console.log("Found ad post at Y:", currentY);
 
-							// Define scroll parameters
-							const scrollDuration = 2000; // Duration of scroll in milliseconds
-
-							const distancePerTimes = 1000;
-							const times = Math.ceil(scrollDistance / distancePerTimes);
-
-							if (currentY <= 150) {
-								await driver.performActions([
-									{
-										type: "pointer",
-										id: "finger1",
-										parameters: { pointerType: "touch" },
-										actions: [
-											{
-												type: "pointerMove",
-												duration: 0,
-												x: 200,
-												y: height / 2,
-											},
-											{ type: "pointerDown", button: 0 },
-											{ type: "pause", duration: 100 },
-											{
-												type: "pointerMove",
-												duration: scrollDuration,
-												x: 200,
-												y: height / 2 - 300,
-											},
-											{ type: "pointerUp", button: 0 },
-										],
-									},
-								]);
-
-								await driver.pause(scrollDuration); // Wait for scroll to complete and a bit more
-								continue;
-							}
-
-							for (let i = 0; i < times; i++) {
-								if (scrollDistance <= 0) {
+							// Scroll until the post is near the top (Y < 300)
+							while (currentY > 300) {
+								const scrolled = await smoothScroll(driver, 300);
+								if (!scrolled) {
+									console.log("Scroll failed, breaking");
 									break;
 								}
+								await driver.pause(500); // Wait for scroll to settle
 
-								await driver.performActions([
-									{
-										type: "pointer",
-										id: "finger1",
-										parameters: { pointerType: "touch" },
-										actions: [
-											{
-												type: "pointerMove",
-												duration: 0,
-												x: 200,
-												y: height / 2,
-											},
-											{ type: "pointerDown", button: 0 },
-											{ type: "pause", duration: 100 },
-											{
-												type: "pointerMove",
-												duration:
-													scrollDistance <= distancePerTimes
-														? scrollDistance * 2
-														: distancePerTimes * 2,
-												x: 200,
-												y:
-													height / 2 -
-													(scrollDistance <= distancePerTimes
-														? scrollDistance
-														: distancePerTimes),
-											},
-											{ type: "pointerUp", button: 0 },
-										],
-									},
-								]);
+								// Re-check position after scroll
+								const newBounds = await currentPost.getAttribute("bounds");
+								const newMatch = newBounds.match(
+									/\[(\d+),(\d+)\]\[(\d+),(\d+)\]/
+								);
+								if (!newMatch) break;
+								const [, , newY] = newMatch.map(Number);
 
-								await driver.pause(scrollDuration); // Wait for scroll to complete and a bit more
+								if (newY < 300) {
+									// Post is in position, proceed with screenshot and analysis
+									const screenshot = await driver.takeScreenshot();
+									const screenshotPath = `./${deviceId}.png`;
+									writeFileSync(screenshotPath, screenshot, "base64");
 
-								scrollDistance -= distancePerTimes;
+									await driver.pause(getRandomInt(1400, 3000));
+									const analysisResult = await analyzeScreenshotWithOpenAI(
+										screenshotPath
+									);
+									console.log("OpenAI Analysis Result:", analysisResult);
+
+									if (analysisResult.isRelated) {
+										// Process share and copy link functionality
+										await processShareAndCopyLink(
+											driver,
+											currentPost,
+											deviceId
+										);
+									}
+									break;
+								}
 							}
 						}
 					}
 
-					const currentFocusPost = posts[posts.length - 1];
-					const hideAdElements = await currentFocusPost.$$("~Hide ad");
-					const hideAdChineseElements = await currentFocusPost.$$("~隐藏广告");
-					const isAds =
-						hideAdElements.length > 0 || hideAdChineseElements.length;
-
-					if (isAds.length === 0) {
-						continue;
-					}
-
-					const screenshot = await driver.takeScreenshot();
-					const screenshotPath = `./${deviceId}.png`;
-
-					await driver.pause(getRandomInt(2000, 4000));
-					writeFileSync(screenshotPath, screenshot, "base64");
-					console.log(`Screenshot saved to: ${screenshotPath}`);
-
-					await driver.pause(getRandomInt(1400, 3000));
-					// Analyze the screenshot with OpenAI
-					const analysisResult = await analyzeScreenshotWithOpenAI(
-						screenshotPath
-					);
-					console.log("OpenAI Analysis Result:", analysisResult);
-
-					if (!analysisResult.isRelated) {
-						console.log("Post is not sponsored");
-						continue;
-					}
-
-					const shareButtonEnglish = await currentFocusPost.$$("~Share");
-					const shareButtonChinese = await currentFocusPost.$$("~分享");
-
-					if (
-						shareButtonEnglish.length === 0 &&
-						shareButtonChinese.length === 0
-					) {
-						continue;
-					}
-
-					const shareButton =
-						shareButtonEnglish.length > 0
-							? shareButtonEnglish
-							: shareButtonChinese;
-
-					await shareButton[0].click();
-
-					const copyLinkButtonEnglish = await driver.$$("~Copy link");
-					const copyLinkButtonChinese = await driver.$$("~复制链接");
-					await driver.pause(getRandomInt(2000, 5000));
-
-					const copyLinkButton =
-						copyLinkButtonEnglish.length > 0
-							? copyLinkButtonEnglish
-							: copyLinkButtonChinese;
-					console.log("copyLinkButton", copyLinkButton);
-
-					if (copyLinkButton.length === 0) {
-						const closeButtonEnglish = await driver.$$("~Close");
-						const closeButtonChinese = await driver.$$("~关闭");
-						const closeButton =
-							closeButtonEnglish.length > 0
-								? closeButtonEnglish
-								: closeButtonChinese;
-
-						if (closeButton.length > 0) {
-							await closeButton[0].click();
-						} else {
-							console.log("Neither 'Copy link' nor 'Close' button found");
-						}
-						continue;
-					}
-
-					await copyLinkButton[0].click();
-
-					await driver.pause(getRandomInt(2000, 5000));
-
-					const clipboardContent = await getClipboardContent();
-					console.log("clipboardContent", clipboardContent);
-
-					await axios.post("https://rpa-gpt.b1ueprint.com/api/records", {
-						url: clipboardContent,
-						postId: `-`,
-						lastCommented: 0,
-						commentLimit: 0,
-						accountId: deviceId,
-					});
-
-					await driver.pause(getRandomInt(2000, 5000));
-				} catch (postError) {
-					console.error(`Error processing post ${i}:`, postError);
+					// Scroll for next iteration if needed
+					await smoothScroll(driver, 500);
+					await driver.pause(getRandomInt(500, 1000));
+				} catch (e) {
+					console.error(`Error processing post ${i}:`, e);
 					// Optionally, you can try to recover here, e.g., by restarting the app
-					await driver.activateApp("com.facebook.katana");
-					await driver.pause(getRandomInt(5000, 10000));
+					await driver.activateApp("com.facebook.katana"); // Restart the app in case of an error
+					await driver.pause(getRandomInt(5000, 10000)); // Pause before retrying
 				}
 			}
 
@@ -359,24 +295,85 @@ async function launchFacebookApp(config, deviceId) {
 	);
 }
 
-async function createDriver(deviceId, capabilities) {
-	const _capabilities = {
-		...capabilities,
-		"appium:udid": deviceId,
-	};
+// Helper function to handle share and copy link functionality
+async function processShareAndCopyLink(driver, post, deviceId) {
+	// Find and click share button
+	const shareButtonEnglish = await post.$$("~Share");
+	const shareButtonChinese = await post.$$("~分享");
 
+	if (shareButtonEnglish.length === 0 && shareButtonChinese.length === 0) {
+		console.log("No share button found");
+		return;
+	}
+
+	const shareButton =
+		shareButtonEnglish.length > 0 ? shareButtonEnglish : shareButtonChinese;
+	await shareButton[0].click();
+	await driver.pause(getRandomInt(2000, 5000));
+
+	// Find and click copy link button
+	const copyLinkButtonEnglish = await driver.$$("~Copy link");
+	const copyLinkButtonChinese = await driver.$$("~复制链接");
+	const copyLinkButton =
+		copyLinkButtonEnglish.length > 0
+			? copyLinkButtonEnglish
+			: copyLinkButtonChinese;
+
+	if (copyLinkButton.length === 0) {
+		const closeButton = await findCloseButton(driver);
+		if (closeButton) await closeButton.click();
+		return;
+	}
+
+	await copyLinkButton[0].click();
+	await driver.pause(getRandomInt(2000, 5000));
+
+	// Handle clipboard content
+	const clipboardContent = await getClipboardContent();
+	if (clipboardContent) {
+		await axios.post("https://rpa-gpt.b1ueprint.com/api/records3", {
+			url: clipboardContent,
+			postId: `-`,
+			lastCommented: 0,
+			commentLimit: 0,
+			accountId: deviceId,
+		});
+	}
+}
+
+// Helper function to find close button
+async function findCloseButton(driver) {
+	const closeButtonEnglish = await driver.$$("~Close");
+	const closeButtonChinese = await driver.$$("~关闭");
+	return closeButtonEnglish.length > 0
+		? closeButtonEnglish[0]
+		: closeButtonChinese.length > 0
+		? closeButtonChinese[0]
+		: null;
+}
+
+async function createDriver(deviceId, capabilities, port) {
 	const serverInfo = appiumServerMap.get(deviceId);
 	if (!serverInfo) {
 		throw new Error(`No Appium server found for device ${deviceId}`);
 	}
 
+	// const driver = await wdio.remote({
+	// 	protocol: "http",
+	// 	hostname: "localhost",
+	// 	port: parseInt(deviceId.split("-")[1]) - 1000,
+	// 	path: "/",
+	// 	capabilities: _capabilities,
+	// 	logLevel: "error",
+	// });
+
+	console.log("deviceId", deviceId);
+
 	const driver = await wdio.remote({
-		protocol: "http",
-		hostname: "localhost",
-		port: serverInfo.port,
-		path: "/",
-		capabilities: _capabilities,
-		logLevel: "warn",
+		hostname: "127.0.0.1",
+		port: port,
+		logLevel: "error",
+		capabilities: capabilities,
 	});
 
 	driverMap.set(deviceId, driver);
@@ -388,7 +385,13 @@ async function closeApp(deviceId) {
 	if (driver) {
 		try {
 			await driver.terminateApp("com.facebook.katana");
-			console.log(`Facebook app closed successfully for device ${deviceId}`);
+			await cleanupResources(driver, deviceId);
+			await driver.pause(2000);
+
+			// Clear the driver from memory
+			driverMap.delete(deviceId);
+
+			console.log(`Facebook app closed and cleaned up for device ${deviceId}`);
 		} catch (error) {
 			console.error(
 				`Error closing Facebook app for device ${deviceId}:`,
@@ -397,21 +400,29 @@ async function closeApp(deviceId) {
 		}
 	}
 }
-function startAppiumServer(deviceId) {
-	return new Promise((resolve, reject) => {
-		function getPortFromDeviceId(deviceId) {
-			const numericPart = parseInt(deviceId.split("-")[1]);
-			return numericPart - 1000; // Ensures port is between 4723 and 5722
-		}
 
-		const port = getPortFromDeviceId(deviceId);
+function startAppiumServer(deviceId, port) {
+	return new Promise((resolve, reject) => {
 		console.log("Starting Appium server...", port);
 
 		let appium;
 		try {
 			appium = spawn(
 				process.env.APPIUM_PATH || "appium",
-				["--use-drivers", "uiautomator2", "-p", port.toString()],
+				[
+					"server", // Add this
+					"--use-drivers",
+					"uiautomator2",
+					"--address",
+					"127.0.0.1",
+					"--port",
+					port.toString(),
+					"--base-path",
+					"/", // Changed from /wd/hub
+					"--allow-insecure",
+					"chromedriver_autodownload",
+					"--session-override", // Add this
+				],
 				{
 					stdio: ["pipe", "pipe", "pipe"],
 					shell: true,
@@ -491,14 +502,14 @@ function stopAppiumServer(deviceId) {
 	});
 }
 
-async function scraperMain(config, deviceId) {
+async function scraperMain(config, deviceId, port) {
 	console.log("Node version:", process.version);
 	console.log("ANDROID_HOME:", process.env.ANDROID_HOME);
 	console.log("JAVA_HOME:", process.env.JAVA_HOME);
 
 	try {
-		await startAppiumServer(deviceId);
-		await launchFacebookApp(config, deviceId);
+		await startAppiumServer(deviceId, port);
+		await launchFacebookApp(config, deviceId, port);
 	} catch (error) {
 		console.error("Error in scraperMain:", error);
 	} finally {
@@ -506,14 +517,25 @@ async function scraperMain(config, deviceId) {
 	}
 }
 
+// 6. Update shutdownAll to properly clean everything
 async function shutdownAll() {
-	// for (const [deviceId, driver] of driverMap.entries()) {
-	// 	await closeApp(deviceId);
-	// 	await driver.deleteSession();
-	// }
-	// driverMap.clear();
-	// appiumServerMap.clear();
-	// await stopAppiumServer();
+	for (const [deviceId, driver] of driverMap.entries()) {
+		try {
+			await closeApp(deviceId);
+			await cleanupResources(driver, deviceId);
+			await driver.deleteSession();
+		} catch (error) {
+			console.error(`Error shutting down device ${deviceId}:`, error);
+		}
+	}
+
+	driverMap.clear();
+	appiumServerMap.clear();
+
+	// Force garbage collection
+	if (global.gc) {
+		global.gc();
+	}
 }
 
 module.exports = {

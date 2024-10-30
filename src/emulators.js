@@ -87,8 +87,45 @@ async function startEmulator(emulatorName) {
 	}
 }
 
+function getDeviceIdByName(searchName) {
+	try {
+		const devicesOutput = execSync("adb devices", { encoding: "utf-8" });
+
+		const deviceIds = devicesOutput
+			.split("\n")
+			.slice(1)
+			.filter((line) => line.includes("device"))
+			.map((line) => line.split("\t")[0])
+			.filter((id) => id);
+
+		// Search through each device
+		for (const deviceId of deviceIds) {
+			try {
+				const deviceName = execSync(
+					`adb -s ${deviceId} shell settings get global device_name`,
+					{ encoding: "utf-8" }
+				).trim();
+
+				if (deviceName.toLowerCase().includes(searchName.toLowerCase())) {
+					return {
+						id: deviceId,
+						name: deviceName,
+					};
+				}
+			} catch (err) {
+				// Silent fail for individual device errors
+				continue;
+			}
+		}
+		return null;
+	} catch (error) {
+		return null;
+	}
+}
+
 module.exports = {
 	listEmulators,
 	getEmulatorDeviceId,
 	startEmulator,
+	getDeviceIdByName,
 };

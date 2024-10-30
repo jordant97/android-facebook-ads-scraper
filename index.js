@@ -1,4 +1,4 @@
-const { startEmulator } = require("./src/emulators");
+const { startEmulator, getDeviceIdByName } = require("./src/emulators");
 const { scraperMain, shutdownAll, initializeOpenAI } = require("./src/scraper");
 
 module.exports = {
@@ -6,4 +6,5 @@ module.exports = {
 	scraperMain,
 	shutdownAll,
 	initializeOpenAI,
+	getDeviceIdByName,
 };
